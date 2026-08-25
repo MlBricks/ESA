@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlbricks-esa"
+version = "1.0.0"
+description = "Standalone Entangled State Attention library"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1"]
+license = {file = "LICENSE.md"}
+authors = [{name="Zameer Hussain"}, {name="Akhtar Hussain"}]
+
+[tool.setuptools.packages.find]
+where = ["."]

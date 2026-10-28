@@ -1,5 +1,6 @@
 """Entangled State Attention (ESA) component package."""
 
+from .swqr import OriginalSWQR, OriginalSWQRLayer, OriginalSWQRRecallModel, original_swqr_recall_model
 from .config import ESAConfig
 from .layer import ESA
 from .model import ESAModel, ESAModelConfig
@@ -21,6 +22,10 @@ from .benchmark import (
 from .boost import thunderBoost
 
 __all__ = [
+    "OriginalSWQR",
+    "OriginalSWQRLayer",
+    "OriginalSWQRRecallModel",
+    "original_swqr_recall_model",
     "ESA",
     "ESAConfig",
     "ESAModel",

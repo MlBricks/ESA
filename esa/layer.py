@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from .runtime import normalize_backend
+from .config import _normalize_variant
 
 
 class ESA(nn.Module):
@@ -37,6 +38,7 @@ class ESA(nn.Module):
         compile_mode: str = "default",
         auto_move_input: bool = True,
         strict_checks: bool = False,
+        variant: str = "enhanced",
     ):
         super().__init__()
 
@@ -53,6 +55,7 @@ class ESA(nn.Module):
         if block is not None and block <= 0:
             raise ValueError(f"block must be positive when set, got {block}.")
 
+        self.variant = _normalize_variant(variant)
         self.embd = int(embd)
         self.head = int(head)
         self.batch = None if batch is None else int(batch)
@@ -78,18 +81,29 @@ class ESA(nn.Module):
             if self.compass <= 0:
                 raise ValueError(f"compass must be positive, got {self.compass}.")
 
-        from .backends.thunder import ThunderESA
-        self.layer = ThunderESA(
-            embd=self.embd,
-            head=self.head,
-            compass=self.compass,
-            dropout=self.dropout,
-            precision=self.precision,
-            gate_min=self.gate_min,
-            gate_max=self.gate_max,
-            eps=self.eps,
-            runtime_backend=self.backend,
-        )
+        if self.variant == "base":
+            from .backends.thunder import ThunderESA
+            self.layer = ThunderESA(
+                embd=self.embd,
+                head=self.head,
+                compass=self.compass,
+                dropout=self.dropout,
+                precision=self.precision,
+                gate_min=self.gate_min,
+                gate_max=self.gate_max,
+                eps=self.eps,
+                runtime_backend=self.backend,
+            )
+        else:
+            if self.backend == "native":
+                raise ValueError("variant='enhanced' does not have a native Thunder kernel; use backend='auto' or 'pytorch'.")
+            from .backends.swqr_enhanced import EnhancedSWQRLayer
+            self.layer = EnhancedSWQRLayer(
+                embd=self.embd,
+                head=self.head,
+                dropout=self.dropout,
+                eps=self.eps,
+            )
 
         self.register_buffer("_esa_device_ref", torch.empty(0), persistent=False)
 
@@ -102,13 +116,18 @@ class ESA(nn.Module):
 
     def set_backend(self, backend: str, *, recursive: bool = True):
         del recursive
-        self.backend = normalize_backend(backend, warn_legacy=True)
+        value = normalize_backend(backend, warn_legacy=True)
+        if self.variant == "enhanced" and value == "native":
+            raise ValueError("variant='enhanced' does not support native Thunder kernels.")
+        self.backend = value
         target = getattr(self.layer, "_orig_mod", self.layer)
         if hasattr(target, "runtime_backend"):
             target.runtime_backend = self.backend
         return self
 
     def resolved_backend(self) -> str:
+        if self.variant == "enhanced":
+            return "pytorch"
         if self.backend == "pytorch":
             return "pytorch"
         if self.backend == "native":
@@ -146,9 +165,19 @@ class ESA(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layer(self._prepare_input(x))
+        result = self.layer(self._prepare_input(x))
+        return result[0] if self.variant == "enhanced" else result
 
     def init_state(self, batch: int, *, device=None, dtype=None, layout: str = "heads") -> torch.Tensor:
+        if self.variant == "enhanced":
+            if batch <= 0:
+                raise ValueError("batch must be positive.")
+            if layout not in {"heads", "flat"}:
+                raise ValueError("layout must be heads or flat")
+            target = self._esa_device_ref.device if device is None else torch.device(device)
+            state_dtype = torch.float32 if dtype is None else dtype
+            shape = (batch, self.head, self.embd // self.head) if layout == "heads" else (batch, self.embd)
+            return torch.zeros(shape, device=target, dtype=state_dtype)
         from .generation import lightning_init_state
         return lightning_init_state(self, batch, device=device, dtype=dtype, layout=layout)
 
@@ -162,6 +191,11 @@ class ESA(nn.Module):
         compass: int | str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Process a full sequence and return outputs plus final recurrent state."""
+        if self.variant == "enhanced":
+            if backend is not None and normalize_backend(backend, warn_legacy=False) == "native":
+                raise ValueError("Native Thunder prefill cannot be used with variant='enhanced'.")
+            target = getattr(self.layer, "_orig_mod", self.layer)
+            return target.prefill(self._prepare_input(x), state)
         from .generation import esa_prefill
         return esa_prefill(
             self,
@@ -172,6 +206,9 @@ class ESA(nn.Module):
         )
 
     def decode_step(self, x: torch.Tensor, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.variant == "enhanced":
+            target = getattr(self.layer, "_orig_mod", self.layer)
+            return target.decode_step(self._prepare_input(x) if x.ndim == 3 else x, state)
         from .generation import lightning_decode_step
         return lightning_decode_step(self, x, state)
 

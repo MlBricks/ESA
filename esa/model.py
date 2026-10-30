@@ -25,6 +25,7 @@ from .generation import (
     parse_engine_spec,
 )
 from .layer import ESA
+from .config import _normalize_variant
 from .components import Embedding, FFN, LayerNorm, LMHead
 from .ffnbrick import MicroVirtualFFN, StateAwareFFN, VirtualStateAwareFFN
 from .residualbrick import ResController
@@ -165,8 +166,10 @@ class ESAModelConfig:
     eps: float = 1e-5
     tie_embeddings: bool = True
     format_version: int = 2
+    variant: str = "enhanced"
 
     def __post_init__(self) -> None:
+        self.variant = _normalize_variant(self.variant)
         self.precision = str(self.precision).strip().lower()
         self.compute_dtype = str(self.compute_dtype).strip().lower()
         if self.compute_dtype not in {"auto", "fp16", "bf16", "fp32", "fp64"}:
@@ -249,13 +252,11 @@ class ESAModelConfig:
     ) -> "ESAModelConfig":
         """Construct a model configuration from serialized dictionary values."""
         allowed = cls.__dataclass_fields__.keys()
-        return cls(
-            **{
-                key: value
-                for key, value in data.items()
-                if key in allowed
-            }
-        )
+        accepted = {key: value for key, value in data.items() if key in allowed}
+        # Old serialized model configs had no variant: never reinterpret their
+        # Thunder parameters as a SWQR checkpoint.
+        accepted.setdefault("variant", "base")
+        return cls(**accepted)
 
 
 class _ESABlock(nn.Module):
@@ -286,6 +287,7 @@ class _ESABlock(nn.Module):
             gate_max=cfg.gate_max,
             eps=cfg.eps,
             device=None,
+            variant=cfg.variant,
         )
 
         self.ln2 = LayerNorm(
@@ -661,6 +663,8 @@ class ESAModel(nn.Module):
 
     def set_backend(self, backend: str, *, recursive: bool = True):
         value = normalize_backend(backend, warn_legacy=True)
+        if self.config.variant == "enhanced" and value == "native":
+            raise ValueError("Enhanced SWQR has no native Thunder kernel; select 'auto' or 'pytorch'.")
         self._mlbricks_requested_backend = value
         self._mlbricks_model_route = "operator" if value == "auto" else value
         self._mlbricks_model_route_reason = f"explicit:{value}"

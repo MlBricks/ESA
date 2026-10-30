@@ -13,6 +13,13 @@ Backend = Literal["auto", "native", "pytorch"]
 Precision = Literal["fp8", "fp16", "bf16", "fp32", "fp64"]
 
 
+def _normalize_variant(value: str) -> str:
+    v = str(value).strip().lower()
+    if v not in {"base", "enhanced"}:
+        raise ValueError("variant must be 'base' or 'enhanced'.")
+    return v
+
+
 @dataclass
 class ESAConfig:
     embd: int
@@ -31,8 +38,10 @@ class ESAConfig:
     eps: float = 1e-5
     strict_precision: bool = False
     strict_backend: bool = False
+    variant: str = "enhanced"
 
     def __post_init__(self) -> None:
+        self.variant = _normalize_variant(self.variant)
         if self.embd <= 0:
             raise ValueError(f"embd must be positive, got {self.embd}.")
         if self.head <= 0:
